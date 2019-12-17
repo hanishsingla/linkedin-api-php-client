@@ -80,15 +80,18 @@ class Exception extends \Exception
      */
     private static function extractErrorDescription($exception)
     {
+        if (!$exception->getResponse()) {
+            return null;
+        }
+
         $json = Client::responseToArray(
             $exception->getResponse()
         );
+        
         if (isset($json['error_description'])) {
             return $json['error_description'];
         } elseif (isset($json['message'])) {
             return $json['message'];
-        } else {
-            return null;
         }
     }
 }

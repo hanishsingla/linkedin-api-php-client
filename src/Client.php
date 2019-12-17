@@ -81,7 +81,7 @@ class Client
      * Default API root URL
      * string
      */
-    const API_ROOT = 'https://api.linkedin.com/v1/';
+    const API_ROOT = 'https://api.linkedin.com/v2/';
 
     /**
      * API Root URL
@@ -131,6 +131,7 @@ class Client
     protected $apiHeaders = [
         'Content-Type' => 'application/json',
         'x-li-format' => 'json',
+        'X-Restli-Protocol-Version' => '2.0.0',
     ];
 
     /**
@@ -278,6 +279,7 @@ class Client
                 'headers' => [
                     'Content-Type' => 'application/json',
                     'x-li-format' => 'json',
+                    'X-Restli-Protocol-Version' => '2.0.0',
                     'Connection' => 'Keep-Alive'
                 ]
             ]);
@@ -308,10 +310,22 @@ class Client
      */
     public static function responseToArray($response)
     {
-        return \GuzzleHttp\json_decode(
-            $response->getBody()->getContents(),
-            true
-        );
+        $contents = $response->getBody()->getContents();
+            
+        if ($contents) {
+            return \GuzzleHttp\json_decode(
+                $contents,
+                true
+            );
+        }
+
+        $contents = $response->getHeaders();
+
+        if ($contents) {
+            return $contents;
+        }
+
+        return [];
     }
 
     /**
