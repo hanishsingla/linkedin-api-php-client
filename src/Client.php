@@ -22,6 +22,8 @@ use GuzzleHttp\Exception\RequestException;
 use function GuzzleHttp\Psr7\build_query;
 use GuzzleHttp\Psr7\Uri;
 use LinkedIn\Http\Method;
+use LinkedIn\Http\GlobalVariableGetter;
+use LinkedIn\Exception\LinkedInException;
 
 /**
  * Class Client
@@ -262,6 +264,24 @@ class Client
     }
 
     /**
+     * Get the authorization code from the query parameters, if it exists,
+     * and otherwise return null to signal no authorization code was
+     * discovered.
+     *
+     * @return string|null The authorization code, or null if the authorization code not exists.
+     *
+     * @throws LinkedInException on invalid CSRF tokens
+     */
+    protected function getCode($state)
+    {
+        if (!GlobalVariableGetter::has('code')) {
+            return;
+        }
+
+        return GlobalVariableGetter::get('code');
+    }
+
+    /**
      * Retrieve Access Token from LinkedIn if we have code provided.
      * If code is not provided, return current Access Token.
      * If current access token is not set, will return null
@@ -269,35 +289,47 @@ class Client
      * @param string $code
      *
      * @return \LinkedIn\AccessToken|null
-     * @throws \LinkedIn\Exception
+     * @throws \LinkedIn\LinkedInException
      */
-    public function getAccessToken($code = '')
+    public function getAccessToken()
     {
-        if (!empty($code)) {
-            $uri = $this->buildUrl('accessToken', []);
-            $guzzle = new GuzzleClient([
-                'headers' => [
-                    'Content-Type' => 'application/json',
-                    'x-li-format' => 'json',
-                    'X-Restli-Protocol-Version' => '2.0.0',
-                    'Connection' => 'Keep-Alive'
-                ]
-            ]);
-            try {
-                $response = $guzzle->post($uri, ['form_params' => [
-                    'grant_type' => self::OAUTH2_GRANT_TYPE,
-                    self::OAUTH2_RESPONSE_TYPE => $code,
-                    'redirect_uri' => $this->getRedirectUrl(),
-                    'client_id' => $this->getClientId(),
-                    'client_secret' => $this->getClientSecret(),
-                ]]);
-            } catch (RequestException $exception) {
-                throw Exception::fromRequestException($exception);
-            }
-            $this->setAccessToken(
-                AccessToken::fromResponse($response)
-            );
+        $code = $this->getCode();
+
+        if (empty($code)) {
+            throw new LinkedInException('Could not get access token: The code was empty.');
         }
+
+        $uri = $this->buildUrl('accessToken', []);
+
+        $guzzle = new GuzzleClient([
+            'headers' => [
+                'Content-Type' => 'application/json',
+                'x-li-format' => 'json',
+                'X-Restli-Protocol-Version' => '2.0.0',
+                'Connection' => 'Keep-Alive'
+            ]
+        ]);
+
+        try {
+            $response = $guzzle->post($uri, ['form_params' => [
+                'grant_type' => self::OAUTH2_GRANT_TYPE,
+                self::OAUTH2_RESPONSE_TYPE => $code,
+                'redirect_uri' => $this->getRedirectUrl(),
+                'client_id' => $this->getClientId(),
+                'client_secret' => $this->getClientSecret(),
+            ]]);
+        } catch (RequestException $exception) {
+            throw LinkedInException::fromRequestException($exception);
+        }
+
+        $token = AccessToken::fromResponse($response);
+
+        if (!$token) {
+            throw new LinkedInException('Could not get access token: The response from LinkedIn.com did not contain a token.');
+        }
+
+        $this->setAccessToken($token);
+
         return $this->accessToken;
     }
 
@@ -340,6 +372,7 @@ class Client
         if (is_string($accessToken)) {
             $accessToken = new AccessToken($accessToken);
         }
+        
         if (is_object($accessToken) && $accessToken instanceof AccessToken) {
             $this->accessToken = $accessToken;
         } else {
@@ -356,9 +389,11 @@ class Client
     protected function getCurrentScheme()
     {
         $scheme = 'http';
+
         if (isset($_SERVER['HTTPS']) && "on" === $_SERVER["HTTPS"]) {
             $scheme = 'https';
         }
+        
         return $scheme;
     }
 
@@ -414,8 +449,11 @@ class Client
      * @return string
      */
     public function getLoginUrl(
+        string $redirectUrl,
         array $scope = [Scope::READ_BASIC_PROFILE, Scope::READ_EMAIL_ADDRESS]
     ) {
+        $this->setRedirectUrl($redirectUrl);
+        
         $params = [
             'response_type' => self::OAUTH2_RESPONSE_TYPE,
             'client_id' => $this->getClientId(),
@@ -423,7 +461,9 @@ class Client
             'state' => $this->getState(),
             'scope' => implode(' ', $scope),
         ];
+        
         $uri = $this->buildUrl('authorization', $params);
+
         return $uri;
     }
 
@@ -452,9 +492,11 @@ class Client
     public function setRedirectUrl($redirectUrl)
     {
         $redirectUrl = filter_var($redirectUrl, FILTER_VALIDATE_URL);
+
         if (false === $redirectUrl) {
             throw new \InvalidArgumentException('The argument is not an URL');
         }
+        
         $this->redirectUrl = $redirectUrl;
         return $this;
     }
@@ -473,6 +515,7 @@ class Client
         $path = parse_url($url, PHP_URL_PATH);
         $path .= trim($endpoint, '/');
         $fragment = '';
+
         $uri = Uri::composeComponents(
             $scheme,
             $authority,
@@ -480,8 +523,25 @@ class Client
             build_query($params),
             $fragment
         );
+        
         return $uri;
     }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function isAuthenticated()
+    {
+        $accessToken = $this->getAccessToken();
+        
+        if ($accessToken === null) {
+            return false;
+        }
+
+        $user = $this->api('GET', '/v1/people/~:(id,firstName,lastName)', ['format' => 'json', 'response_data_type' => 'array']);
+        return !empty($user['id']);
+    }
+
 
     /**
      * Perform API call to LinkedIn
@@ -491,30 +551,36 @@ class Client
      * @param string $method
      *
      * @return array
-     * @throws \LinkedIn\Exception
+     * @throws \LinkedIn\LinkedInException
      */
     public function api($endpoint, array $params = [], $method = Method::GET)
     {
         $headers = $this->getApiHeaders();
         $options = $this->prepareOptions($params, $method);
+
         Method::isMethodSupported($method);
+
         if ($this->isUsingTokenParam()) {
             $params['oauth2_access_token'] = $this->accessToken->getToken();
         } else {
             $headers['Authorization'] = 'Bearer ' . $this->accessToken->getToken();
         }
+        
         $guzzle = new GuzzleClient([
             'base_uri' => $this->getApiRoot(),
             'headers' => $headers,
         ]);
+
         if (!empty($params) && Method::GET === $method) {
             $endpoint .= '?' . build_query($params);
         }
+
         try {
             $response = $guzzle->request($method, $endpoint, $options);
         } catch (RequestException $requestException) {
-            throw Exception::fromRequestException($requestException);
+            throw LinkedInException::fromRequestException($requestException);
         }
+        
         return self::responseToArray($response);
     }
 
@@ -525,7 +591,7 @@ class Client
      * @param array  $params
      *
      * @return array
-     * @throws \LinkedIn\Exception
+     * @throws \LinkedIn\LinkedInException
      */
     public function get($endpoint, array $params = [])
     {
@@ -539,7 +605,7 @@ class Client
      * @param array  $params
      *
      * @return array
-     * @throws \LinkedIn\Exception
+     * @throws \LinkedIn\LinkedInException
      */
     public function post($endpoint, array $params = [])
     {
@@ -553,52 +619,11 @@ class Client
      * @param array  $params
      *
      * @return array
-     * @throws \LinkedIn\Exception
+     * @throws \LinkedIn\LinkedInException
      */
     public function delete($endpoint, array $params = [])
     {
         return $this->api($endpoint, $params, Method::DELETE);
-    }
-
-    /**
-     * @param $path
-     * @return array
-     * @throws Exception
-     */
-    public function upload($path)
-    {
-        $headers = $this->getApiHeaders();
-        unset($headers['Content-Type']);
-        //$headers = [];
-        if ($this->isUsingTokenParam()) {
-            //
-        } else {
-            $headers['Authorization'] = 'Bearer ' . $this->accessToken->getToken();
-        }
-        $guzzle = new GuzzleClient([
-            'base_uri' => $this->getApiRoot()
-        ]);
-        $fileinfo = pathinfo($path);
-        $filename = preg_replace('/\W+/', '_', $fileinfo['filename']);
-        if (isset($fileinfo['extension'])) {
-            $filename .= '.' . $fileinfo['extension'];
-        }
-        $options = [
-            'multipart' => [
-                [
-                    'name' => 'source',
-                    'filename' => $filename,
-                    'contents' => fopen($path, 'r')
-                ]
-            ],
-            'headers' => $headers,
-        ];
-        try {
-            $response = $guzzle->request(Method::POST, 'media/upload', $options);
-        } catch (RequestException $requestException) {
-            throw Exception::fromRequestException($requestException);
-        }
-        return self::responseToArray($response);
     }
 
     /**

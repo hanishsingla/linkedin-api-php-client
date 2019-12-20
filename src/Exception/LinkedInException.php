@@ -14,7 +14,7 @@
  * @link     http://www.zoonman.com/projects/linkedin-client/
  */
 
-namespace LinkedIn;
+namespace LinkedIn\Exception;
 
 use GuzzleHttp\Exception\RequestException;
 
@@ -22,7 +22,7 @@ use GuzzleHttp\Exception\RequestException;
  * Class Exception
  * @package LinkedIn
  */
-class Exception extends \Exception
+class LinkedInException extends \Exception
 {
     /**
      * Error's description

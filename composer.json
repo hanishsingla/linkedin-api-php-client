@@ -1,6 +1,6 @@
 {
     "name": "symfgenus/linkedin-api-php-client",
-    "description": "LinkedIn API PHP SDK with OAuth 2.0 & CSRF support. Can be used for social sign in or sharing on LinkedIn. Examples. Documentation.",
+    "description": "LinkedIn API PHP SDK with OAuth 2.0 & CSRF support. Can be used for social sign in.",
     "type": "library",
     "keywords": [
         "linkedin", "linkedin-client", "linkedin-api", "linkedin-signin",
